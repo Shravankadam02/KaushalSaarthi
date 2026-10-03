@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const primaryClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const backupClient = process.env.GEMINI_BACKUP_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_BACKUP_API_KEY) : null;
+
 const chatModelName = process.env.GEMINI_CHAT_MODEL || 'gemini-3.8-flash';
 const embeddingModelName = process.env.GEMINI_EMBED_MODEL || 'gemini-embedding-001';
 const embeddingDimension = Number(process.env.EMBEDDING_DIM || 768);
@@ -15,17 +17,29 @@ function assertConfigured() {
 
 function isRetryable(error) {
     const status = Number(error?.status || error?.response?.status);
-    return status === 429 || status >= 500;
+    const msg = String(error?.message || '');
+    return status === 429 || status >= 500 || msg.includes('429') || msg.includes('Quota exceeded');
 }
 
 async function withRetry(operation) {
     let lastError;
+    let currentClient = primaryClient;
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-            return await operation();
+            return await operation(currentClient);
         } catch (error) {
             lastError = error;
+            const status = Number(error?.status || error?.response?.status);
+            const msg = String(error?.message || '');
+            const isQuotaError = status === 429 || msg.includes('429') || msg.includes('Quota exceeded');
+            
+            if (isQuotaError && backupClient && currentClient === primaryClient) {
+                console.warn('Quota exceeded on primary Gemini key. Switching to backup key...');
+                currentClient = backupClient;
+                continue;
+            }
+
             if (!isRetryable(error) || attempt === 1) throw error;
         }
     }
@@ -52,7 +66,7 @@ function toGeminiContents(messages) {
 export async function generateEmbedding(text) {
     assertConfigured();
 
-    return withRetry(async () => {
+    return withRetry(async (client) => {
         const model = client.getGenerativeModel({ model: embeddingModelName });
         const result = await withTimeout(model.embedContent({
             content: { role: 'user', parts: [{ text }] },
@@ -71,7 +85,7 @@ export async function generateEmbedding(text) {
 export async function generateChat(messages, systemPrompt = '') {
     assertConfigured();
 
-    return withRetry(async () => {
+    return withRetry(async (client) => {
         const model = client.getGenerativeModel({
             model: chatModelName,
             ...(systemPrompt ? { systemInstruction: systemPrompt } : {}),
@@ -101,7 +115,7 @@ function parseJsonResponse(text) {
 export async function generateJSON(messages, systemPrompt, schema) {
     assertConfigured();
 
-    return withRetry(async () => {
+    return withRetry(async (client) => {
         const model = client.getGenerativeModel({
             model: chatModelName,
             ...(systemPrompt ? { systemInstruction: systemPrompt } : {}),
