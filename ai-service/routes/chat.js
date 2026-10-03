@@ -4,7 +4,7 @@ import ChatMessage from '../models/ChatMessage.js';
 import Escalation from '../models/Escalation.js';
 import Notification from '../models/Notification.js';
 import Trade from '../models/Trade.js';
-import OutcomeData from '../models/OutcomeData.js';
+import OutcomeStat from '../models/OutcomeStat.js';
 import {
   checkDistressKeywords,
   checkDistressIntent,
@@ -61,47 +61,98 @@ function buildFallbackReply(retrieved, language) {
   return `${evidence} ${closing}`;
 }
 
-async function retrieveContext(queryText, language) {
+const TRADE_ALIASES = {
+  'electrician': ['electrician', 'इलेक्ट्रिशियन', 'इलेक्ट्रीशियन', 'वीजतंत्री'],
+  'fitter': ['fitter', 'फिटर'],
+  'welder': ['welder', 'welding', 'वेल्डर', 'वेल्डिंग'],
+  'computer-operator-copa': ['computer', 'copa', 'कॉम्प्युटर', 'कंप्यूटर', 'कोपा'],
+  'motor-vehicle-mechanic': ['motor vehicle', 'vehicle mechanic', 'car mechanic', 'bike mechanic', 'गाडी मेकॅनिक', 'गाड़ी मैकेनिक'],
+  'plumber': ['plumber', 'plumbing', 'प्लंबर'],
+  'solar-technician': ['solar', 'सोलर', 'सौर'],
+  'tractor-agri-equipment-mechanic': ['tractor', 'agri', 'ट्रॅक्टर', 'ट्रैक्टर'],
+  'beauty-and-wellness': ['beauty', 'wellness', 'parlour', 'parlor', 'ब्युटी', 'ब्यूटी'],
+  'healthcare-assistant': ['healthcare', 'health care', 'nurse', 'hospital', 'हेल्थकेअर', 'हेल्थकेयर', 'नर्स'],
+};
+
+const tradeLabel = (t) => (typeof t.name === 'string' ? t.name : t.name?.en || t.tradeId);
+
+function detectTrade(text, trades) {
+  const lower = String(text || '').toLowerCase();
+  return trades.find((t) => {
+    const names = [tradeLabel(t).toLowerCase(), ...(TRADE_ALIASES[t.tradeId] || [])];
+    return names.some((n) => lower.includes(n));
+  });
+}
+
+function statText(label, stat, scope) {
+  return `Trade: ${label}. Data for ${scope}, year ${stat.year}. Placement rate: ${stat.placementRatePct}%. ` +
+    `Average starting salary: Rs ${stat.avgStartingSalaryMonthly} per month (range Rs ${stat.salaryMin} to Rs ${stat.salaryMax}). ` +
+    `Average salary after 3 years: Rs ${stat.avgSalaryAfter3YrsMonthly} per month. ` +
+    `Self-employed: ${stat.selfEmployedPct}%. Went on to higher study: ${stat.higherStudyPct}%. Source: ${stat.source}.`;
+}
+
+async function retrieveContext(queryText, language, ctx = {}, history = []) {
   try {
-    const knowledgeContext = await retrieveKnowledgeContext(queryText, language);
-    const trades = await Trade.find({});
-    const outcomes = await OutcomeData.find({});
+    const district = ctx.district || ctx.location;
+    const [knowledge, trades] = await Promise.all([
+      retrieveKnowledgeContext(queryText, language),
+      Trade.find({}).lean(),
+    ]);
 
-    const query = queryText.toLowerCase();
-    const matchesTrade = (name) => {
-      const normalizedName = String(name || '').toLowerCase();
-      return normalizedName.length > 3 && query.includes(normalizedName);
-    };
-    const relevantKnowledge = knowledgeContext.filter((item) => matchesTrade(item.payload?.topic));
-    const relevantTrades = trades.filter((trade) => matchesTrade(trade.name));
-    const relevantOutcomes = outcomes.filter((outcome) => matchesTrade(outcome.tradeName));
-    const contextPoints = [...relevantKnowledge];
+    // 1) which trade? explicit button > this message > earlier messages in this chat
+    let focus = ctx.tradeFocusId ? trades.find((t) => t.tradeId === ctx.tradeFocusId) : null;
+    focus = focus || detectTrade(queryText, trades);
+    for (let i = history.length - 1; i >= 0 && !focus; i -= 1) {
+      focus = detectTrade(history[i].content, trades);
+    }
 
-    relevantTrades.forEach(t => {
-      contextPoints.push({
+    const points = [];
+
+    if (focus) {
+      const label = tradeLabel(focus);
+      points.push({
         payload: {
           type: 'trade_info',
-          topic: t.name,
-          text: `Trade: ${t.name}. Duration: ${t.duration}. Eligibility: ${t.eligibility}. NSQF Level: ${t.nsqfLevel}. Description: ${t.description}. Job Roles: ${t.jobRoles.join(', ')}`,
-          source: 'MSDE Verified Dataset'
-        }
+          topic: label,
+          text: `Trade: ${label}. Duration: ${focus.duration}. Eligibility: ${focus.eligibility}. Skill (NSQF) level: ${focus.nsqfLevel}. ` +
+            `Job roles: ${(focus.jobRoles || []).join(', ')}. Progression: ${focus.progression}.`,
+          source: 'Sample dataset',
+        },
       });
+      let stat = district ? await OutcomeStat.findOne({ tradeId: focus.tradeId, district }).sort({ year: -1 }).lean() : null;
+      let scope = district;
+      if (!stat) {
+        stat = await OutcomeStat.findOne({ tradeId: focus.tradeId }).sort({ year: -1 }).lean();
+        scope = 'another Maharashtra district (no data for your district)';
+      }
+      if (stat) {
+        points.push({
+          payload: { type: 'outcome_data', topic: `Outcome for ${label}`, text: statText(label, stat, scope), source: stat.source },
+        });
+      }
+    } else if (district) {
+      // no trade named yet: give the model a district-wide overview so general questions still get real numbers
+      const rows = await OutcomeStat.find({ district }).sort({ year: -1 }).lean();
+      const seen = new Set();
+      for (const stat of rows) {
+        if (seen.has(stat.tradeId)) continue;
+        seen.add(stat.tradeId);
+        const t = trades.find((x) => x.tradeId === stat.tradeId);
+        const label = t ? tradeLabel(t) : stat.tradeId;
+        points.push({
+          payload: { type: 'outcome_data', topic: `Outcome for ${label}`, text: statText(label, stat, district), source: stat.source },
+        });
+      }
+    }
+
+    // general guidance chunks from Qdrant (no trade-name filtering)
+    knowledge.slice(0, 2).forEach((k) => {
+      if (k.payload?.text) points.push({ payload: { type: k.payload.type || 'guidance', topic: k.payload.topic || 'Guidance', text: k.payload.text, source: k.payload.source || 'Knowledge base' } });
     });
 
-    relevantOutcomes.forEach(o => {
-      contextPoints.push({
-        payload: {
-          type: 'outcome_data',
-          topic: `Outcome for ${o.tradeName}`,
-          text: `Trade: ${o.tradeName}. Average Salary: ${o.averageSalary} INR. Placement Rate: ${o.placementRate}%. Top Employers: ${o.topEmployers.join(', ')}. Career Growth: ${o.careerProgression}`,
-          source: 'MSDE Verified Dataset'
-        }
-      });
-    });
-
-    return contextPoints;
+    return points;
   } catch (err) {
-    console.error("Failed to fetch MongoDB context", err);
+    console.error('Failed to build context:', err);
     return [];
   }
 }
@@ -119,14 +170,14 @@ Your role is to help learners and their parents understand suitable vocational c
 
 User context:
 - Name: ${studentContext.firstName || 'the user'}
-- Location: ${studentContext.location || 'Unknown'}
+- District: ${studentContext.district || studentContext.location || 'Unknown'}
 - Preferred Language: ${language}
 
 CRITICAL RULES (ANTI-HALLUCINATION):
 1. You must base your factual claims (placement rates, salaries, job availability, training providers, NSQF levels, course durations, career progressions) STRICTLY on the retrieved data provided below.
-2. If the retrieved data does not contain the answer, you MUST say: "I don't have verified data for this question." and then offer: "Would you like to connect with a counsellor?"
+2. Use the retrieved data below whenever it is relevant, quoting the exact numbers, the district/year and that it is sample data. Only if the data block below says "No specific verified data found" (or clearly lacks the figure asked for) say that you do not have verified data for that question and offer a counsellor. Never refuse when relevant data is present.
 3. NEVER invent or guess any numbers, salaries, or placement rates.
-4. If asked in Marathi, respond entirely in simple, easy-to-understand Marathi. If asked in English, respond in English.
+4. Reply in the family's preferred language (Marathi, Hindi or English), in simple words a parent with little schooling can follow.
 5. Provide a supportive, respectful tone suitable for parents and learners. Address parental concerns like income, safety, and social perception confidently using the data.
 
 Relevant guidance from the verified knowledge base:
@@ -246,9 +297,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const retrieved = await retrieveContext(message, language);
-    const systemPrompt = buildSystemPrompt(studentContext, retrieved, language);
-
     const history = await ChatMessage.find({
       chatSessionId: session._id,
     }).sort({ createdAt: 1 });
@@ -259,6 +307,9 @@ router.post('/', async (req, res) => {
         role: h.role === 'ai' ? 'assistant' : 'user',
         content: h.content,
       }));
+
+    const retrieved = await retrieveContext(message, language, studentContext, chatHistory);
+    const systemPrompt = buildSystemPrompt(studentContext, retrieved, language);
 
     let reply;
     let fallbackUsed = false;
