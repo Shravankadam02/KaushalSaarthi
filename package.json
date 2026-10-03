@@ -1,0 +1,14 @@
+{
+  "name": "kaushalsaarthi",
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../ai-service && npm install",
+    "start": "concurrently \"npm run start:server\" \"npm run start:client\" \"npm run start:ai\"",
+    "start:server": "cd server && npm run dev",
+    "start:client": "cd client && npm run dev",
+    "start:ai": "cd ai-service && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
