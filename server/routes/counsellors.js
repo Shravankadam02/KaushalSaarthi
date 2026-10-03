@@ -48,6 +48,10 @@ router.post('/request', protect, requireRole('family'), async (req, res) => {
       summary: note || 'Family requested a counselling call.',
       status: 'open',
     });
+
+    family.counsellorId = counsellor.counsellorCode;
+    await family.save();
+
     await Notification.create({
       recipientId: counsellor.counsellorCode,
       title: 'New family counselling request',

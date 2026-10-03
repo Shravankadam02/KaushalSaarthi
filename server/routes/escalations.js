@@ -96,6 +96,17 @@ router.patch('/:id/status', protect, requireRole('mentor', 'admin', 'counsellor'
     }
 
     escalation.status = status;
+    if (status === 'in_progress' || status === 'resolved') {
+      if (escalation.familyId && !escalation.mentorId) {
+        escalation.mentorId = req.user.counsellorCode;
+        const family = await Family.findOne({ familyId: escalation.familyId });
+        if (family && !family.counsellorId) {
+          family.counsellorId = req.user.counsellorCode;
+          await family.save();
+        }
+      }
+    }
+    
     if (req.body.outcome !== undefined) escalation.outcome = req.body.outcome;
     if (req.body.counsellorNotes !== undefined) escalation.counsellorNotes = req.body.counsellorNotes;
     await escalation.save();

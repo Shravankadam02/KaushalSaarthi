@@ -36,6 +36,7 @@ router.post('/', protect, requireRole('student', 'family'), async (req, res) => 
         learnerEducation: family.learnerEducation,
         interests: family.learnerInterests,
         preferredLanguage: family.preferredLanguage,
+        mentorId: family.counsellorId,
         speaker,
       };
     } else {
@@ -90,7 +91,7 @@ router.post('/escalate', protect, requireRole('student', 'family'), async (req, 
     const studentContext = {
       studentId: family?.familyId || student.studentId,
       familyId: family?.familyId,
-      mentorId: student?.mentorId,
+      mentorId: family?.counsellorId || student?.mentorId,
       phone: family?.phone || student?.phone,
       preferredContact,
       preferredTime,
