@@ -321,31 +321,12 @@ export default function FamilyChat() {
                 </button>
               </form>
               <div className="mx-auto mt-3 flex max-w-3xl justify-center">
-                <button
-                  type="button"
-                  onClick={async (event) => {
-                    if (!sessionId) return;
-                    const originalText = event.currentTarget.innerText;
-                    event.currentTarget.innerText = "Requesting...";
-                    event.currentTarget.disabled = true;
-                    try {
-                      await api.post("/chat/escalate", { chatSessionId: sessionId });
-                      setMessages(current => [
-                        ...current,
-                        { role: "ai", content: "I've let a human counsellor know. They will reach out to you shortly." }
-                      ]);
-                      event.currentTarget.innerText = "Request Sent ✓";
-                    } catch (err) {
-                      event.currentTarget.innerText = originalText;
-                      event.currentTarget.disabled = false;
-                      setError("Failed to request human support. Please try again.");
-                    }
-                  }}
-                  disabled={!sessionId}
-                  className="text-sm font-bold text-rose-700 disabled:text-slate-400"
+                <Link
+                  to="/counsellors"
+                  className="text-sm font-bold text-rose-700 hover:text-rose-900"
                 >
                   {text.human}
-                </button>
+                </Link>
               </div>
             </div>
           </section>
