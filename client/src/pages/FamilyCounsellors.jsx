@@ -12,6 +12,7 @@ import api from "../api/axios";
 
 export default function FamilyCounsellors() {
   const [counsellors, setCounsellors] = useState([]);
+  const [family, setFamily] = useState(null);
   const [selected, setSelected] = useState(null);
   const [contact, setContact] = useState("call");
   const [time, setTime] = useState("Evening");
@@ -23,15 +24,23 @@ export default function FamilyCounsellors() {
   useEffect(() => {
     api
       .get("/families/me")
-      .then(({ data }) =>
-        api.get("/counsellors", {
+      .then(({ data: familyData }) => {
+        const fam = familyData.family;
+        setFamily(fam);
+        return api.get("/counsellors", {
           params: {
-            district: data.family.district,
-            language: data.family.preferredLanguage,
+            district: fam.district,
+            language: fam.preferredLanguage,
           },
-        }),
-      )
-      .then(({ data }) => setCounsellors(data))
+        }).then(({ data: counsellorsData }) => {
+          const sorted = counsellorsData.sort((a, b) => {
+            if (a.counsellorCode === fam.counsellorId) return -1;
+            if (b.counsellorCode === fam.counsellorId) return 1;
+            return 0;
+          });
+          setCounsellors(sorted);
+        });
+      })
       .catch(() =>
         setStatus("Counsellor availability is temporarily unavailable."),
       )
@@ -48,8 +57,16 @@ export default function FamilyCounsellors() {
         note,
       });
       setStatus("Your request is open. A counsellor will contact your family.");
+      // Optimistically update the family counsellorId in UI
+      setFamily(current => ({ ...current, counsellorId: selected.counsellorCode }));
       setSelected(null);
       setNote("");
+      // Resort array
+      setCounsellors(current => [...current].sort((a, b) => {
+        if (a.counsellorCode === selected.counsellorCode) return -1;
+        if (b.counsellorCode === selected.counsellorCode) return 1;
+        return 0;
+      }));
     } catch (error) {
       setStatus(error.response?.data?.message || "Could not send the request.");
     } finally {
@@ -100,13 +117,20 @@ export default function FamilyCounsellors() {
             counsellors.map((counsellor) => (
               <article
                 key={counsellor._id}
-                className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+                className={`rounded-3xl border ${family?.counsellorId === counsellor.counsellorCode ? 'border-amber-400 bg-amber-50/50' : 'border-slate-200 bg-white'} p-6 shadow-sm`}
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h2 className="text-xl font-black">
-                      {counsellor.username}
-                    </h2>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-xl font-black">
+                        {counsellor.username}
+                      </h2>
+                      {family?.counsellorId === counsellor.counsellorCode && (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-800">
+                          Your Counsellor
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-1 text-sm font-semibold text-amber-700">
                       {counsellor.specialization || "Career counselling"}
                     </p>
